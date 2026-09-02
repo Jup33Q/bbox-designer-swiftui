@@ -18,6 +18,37 @@ description: 用 BBoxDesigner(SwiftUI 版 bbox.toolbuddy.art)+ 本地 flux-klein
 - **姿势关键词**(写进元素 description):`front-facing, standing straight, symmetrical A-pose, arms slightly away from body, looking at viewer, full body visible, no cropping`
 - **风格**(style_description):`art_style=true`,aesthetics 例:`anime cel shading, clean lineart, Live2D-style character sheet art, flat colors with soft gradient shading`
 
+## 部件级布局(头发 / 五官 / 衣物细节,坐标为 [ymin,xmin,ymax,xmax] @0-1000)
+
+生成 Live2D 立绘或人脸时,**必须**把头发、五官(眉/眼/鼻/嘴)、衣物细节拆成独立 bbox 并放在正确位置——不能只给一个大框。竖版 768×1152 竖构图的参考布局(可按角色比例微调):
+
+| 部件 | bbox | 说明 |
+|---|---|---|
+| 整体头发 hair | [40,180,520,820] | 覆盖头顶到肩,含刘海与两侧垂发 |
+| 脸 face | [220,300,600,700] | 脸部皮肤区域,在头发之下 |
+| 左眉 eyebrow_left | [300,340,345,470] | 眉比眼略宽、略高 |
+| 右眉 eyebrow_right | [300,530,345,660] | 与左眉水平对称 |
+| 左眼 eye_left | [345,350,425,475] | 眉正下方 |
+| 右眼 eye_right | [345,525,425,650] | |
+| 鼻子 nose | [425,460,510,540] | 两眼之间中轴线 |
+| 嘴 mouth | [520,420,575,580] | 鼻正下方 |
+| 左耳 ear_left | [330,215,430,295] | 可选 |
+| 右耳 ear_right | [330,705,430,785] | 可选 |
+| 脖子 neck | [590,430,665,570] | |
+| 衣领 collar | [640,360,740,640] | 领口/领巾/项链区 |
+| 上身衣物 upper_clothing | [660,180,1000,820] | 肩线到下摆,含褶皱/扣子/花纹等细节描述 |
+| 发饰 accessory | [120,230,220,350] | 可选(发夹/缎带) |
+
+要点:左右部件以 x=500 中轴严格对称;五官全部落在 face 框内部;衣物框与 neck/collar 衔接不留缝。
+
+## 迭代流程(重要)
+
+1. **先生成基础部件集**:头发 + 脸 + 五官 + 脖子 + 上身衣物(约 10 个框),输出 JSON
+2. **等用户调整**:用户在 App 里拖框微调位置/大小,或口头提修改要求
+3. **再加细节**:确认后追加衣物细节(扣子/花纹/口袋)、发饰、手部等框
+4. 每轮**保存 JSON 到工作区文件**(如 `live2d-layout-<时间戳>.json`),并在回复里用 ```json ``` 代码块完整包裹输出,方便用户直接复制粘贴到 App「导入」框
+5. 用户满意后再走「生成与后处理」
+
 ## 现成 caption 模板(可直接粘贴进 App「导入」再拖框微调)
 
 ```json
