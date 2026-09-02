@@ -34,4 +34,14 @@ codesign --force --sign - "$APP" 2>/dev/null || true
 LSREGISTER="/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister"
 [ -x "$LSREGISTER" ] && "$LSREGISTER" -f "$APP" || true
 
+# 同步最新版本到桌面(若桌面上已有旧版则替换)
+DESKTOP_APP="$HOME/Desktop/BBoxDesigner.app"
+if [ "$(pwd)" != "$HOME/Desktop" ]; then
+  rm -rf "$DESKTOP_APP"
+  cp -R "$APP" "$HOME/Desktop/"
+  xattr -cr "$DESKTOP_APP" 2>/dev/null || true
+  [ -x "$LSREGISTER" ] && "$LSREGISTER" -f "$DESKTOP_APP" || true
+  echo "synced to $DESKTOP_APP"
+fi
+
 echo "built $APP — open with: open $APP"
