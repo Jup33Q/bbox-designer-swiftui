@@ -87,6 +87,55 @@ enum SelfTest {
         check(s2.boxes.count == before, "round-trip 再解析元素数一致")
         check(s2.parseError == nil, "round-trip 无错误")
 
+        // 7) 智能对齐吸附(computeSnap 纯函数 + EditorState 接线)
+        let canvas = SmartGuides.canvasCandidates(w: 1000, h: 1000)
+        // 7.1 左边线吸附:左边缘 x=102,候选 v@100,阈值 6 → deltaX=-2
+        let r1 = SmartGuides.computeSnap(moving: CGRect(x: 102, y: 300, width: 100, height: 100),
+                                         candidates: [SnapLine(axis: .v, pos: 100)], threshold: 6)
+        check(r1.deltaX == -2 && r1.deltaY == 0 && r1.lines == [SnapLine(axis: .v, pos: 100)], "吸附:左边线吸附 v@100")
+        // 7.2 中线吸附:包围盒中X 命中画布中线 v@500
+        let r2 = SmartGuides.computeSnap(moving: CGRect(x: 447, y: 300, width: 100, height: 100),
+                                         candidates: canvas, threshold: 6)
+        check(r2.deltaX == 3 && r2.lines.contains(SnapLine(axis: .v, pos: 500)), "吸附:中X 命中画布中线")
+        // 7.3 双轴同时吸附:X 命中物体边缘 v@100 + Y 命中画布中线 h@500
+        let r3 = SmartGuides.computeSnap(moving: CGRect(x: 102, y: 447, width: 100, height: 100),
+                                         candidates: canvas + [SnapLine(axis: .v, pos: 100)], threshold: 6)
+        check(r3.deltaX == -2 && r3.deltaY == 3 && r3.lines.count == 2, "吸附:双轴同时吸附")
+        // 7.4 超阈值不吸附:距离 7px → 无 lines、无 delta
+        let r4 = SmartGuides.computeSnap(moving: CGRect(x: 107, y: 300, width: 100, height: 100),
+                                         candidates: [SnapLine(axis: .v, pos: 100)], threshold: 6)
+        check(r4.lines.isEmpty && r4.deltaX == 0 && r4.deltaY == 0, "吸附:超阈值不吸附")
+        // 7.5 多候选取最近:候选 101/104,当前 102 → 选 101
+        let r5 = SmartGuides.computeSnap(moving: CGRect(x: 102, y: 300, width: 50, height: 50),
+                                         candidates: [SnapLine(axis: .v, pos: 101), SnapLine(axis: .v, pos: 104)], threshold: 6)
+        check(r5.deltaX == -1 && r5.lines == [SnapLine(axis: .v, pos: 101)], "吸附:多候选取最近")
+        // 7.6 缩放边吸附:拖 e 边到 898,候选 v@900 → 夹到 900
+        let r6 = SmartGuides.computeSnap(edge: 898, axis: .v,
+                                         candidates: [SnapLine(axis: .v, pos: 900)], threshold: 6)
+        check(r6.deltaX == 2 && r6.deltaY == 0 && r6.lines == [SnapLine(axis: .v, pos: 900)], "吸附:缩放边夹到候选线")
+        // 7.7 smartSnapEnabled=false 时走原逻辑(不吸附、无参考线,行为回归不变)
+        let s3 = EditorState()
+        s3.smartSnapEnabled = false
+        let a3 = s3.addBox(at: CGPoint(x: 300, y: 300))
+        let b3 = s3.addBox(at: CGPoint(x: 600, y: 700))
+        let edgeX = a3.x + a3.w
+        s3.boxDown(b3, at: CGPoint(x: b3.x, y: b3.y), additive: false)
+        s3.moveDragged(to: CGPoint(x: edgeX - 2, y: b3.y))
+        let moved3 = s3.boxes.first(where: { $0.id == b3.id })!
+        check(moved3.x == edgeX - 2 && s3.activeGuides.isEmpty, "吸附:smartSnapEnabled=false 不吸附")
+        s3.endDrag()
+        // 7.8 正向接线:开启时整体移动吸附到物体边缘,endDrag 清空参考线
+        let s4 = EditorState()
+        let a4 = s4.addBox(at: CGPoint(x: 300, y: 300))
+        let b4 = s4.addBox(at: CGPoint(x: 600, y: 700))
+        let edgeX4 = a4.x + a4.w
+        s4.boxDown(b4, at: CGPoint(x: b4.x, y: b4.y), additive: false)
+        s4.moveDragged(to: CGPoint(x: edgeX4 - 2, y: b4.y))
+        let moved4 = s4.boxes.first(where: { $0.id == b4.id })!
+        check(moved4.x == edgeX4 && s4.activeGuides.contains(SnapLine(axis: .v, pos: edgeX4)), "吸附:移动吸附到物体边缘")
+        s4.endDrag()
+        check(s4.activeGuides.isEmpty, "吸附:endDrag 清空参考线")
+
         print(failures == 0 ? "ALL PASS" : "\(failures) FAILURES")
         return failures == 0 ? 0 : 1
     }

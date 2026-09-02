@@ -133,6 +133,23 @@ struct CanvasAreaView: View {
                 }
             }
 
+            // 智能对齐参考线(1px 实线黄,贯穿画布;区别于框选虚线)
+            ForEach(state.activeGuides, id: \.self) { line in
+                if line.axis == .v {
+                    Rectangle()
+                        .fill(Theme.yellow)
+                        .frame(width: 1, height: cssH)
+                        .offset(x: line.pos * scale, y: 0)
+                        .allowsHitTesting(false)
+                } else {
+                    Rectangle()
+                        .fill(Theme.yellow)
+                        .frame(width: cssW, height: 1)
+                        .offset(x: 0, y: line.pos * scale)
+                        .allowsHitTesting(false)
+                }
+            }
+
             // 框选矩形
             if let r = state.marqueeRect {
                 Rectangle()
@@ -196,7 +213,8 @@ struct BoxView: View {
                                 let additive = NSEvent.modifierFlags.contains(.command) || NSEvent.modifierFlags.contains(.control)
                                 state.boxDown(box, at: p, additive: additive)
                             } else if state.dragMode == .move {
-                                state.moveDragged(to: p)
+                                // 按住 ⌘ 拖动时临时禁用吸附(Keynote 惯例)
+                                state.moveDragged(to: p, suppressSnap: NSEvent.modifierFlags.contains(.command))
                             }
                         }
                         .onEnded { _ in
@@ -235,7 +253,8 @@ struct BoxView: View {
                                     if state.dragMode == .none {
                                         state.resizeBegan(box, handle: hd.name)
                                     } else if case .resize = state.dragMode {
-                                        state.resizeDragged(id: box.id, handle: hd.name, to: p)
+                                        state.resizeDragged(id: box.id, handle: hd.name, to: p,
+                                                            suppressSnap: NSEvent.modifierFlags.contains(.command))
                                     }
                                 }
                                 .onEnded { _ in

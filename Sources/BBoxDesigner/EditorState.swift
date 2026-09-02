@@ -43,6 +43,7 @@ struct Snapshot: Equatable {
     var showingSource: Bool
     var parsedCount: Int
     var snapToGrid: Bool
+    var smartSnapEnabled: Bool
 }
 
 struct ParsedMeta {
@@ -72,6 +73,11 @@ final class EditorState: ObservableObject {
     @Published var focusID: Int? = nil
     @Published var snapToGrid = false
     @Published var showGuides = false
+    @Published var smartSnapEnabled = true
+    /// 智能对齐参考线(瞬态,不进历史)
+    @Published var activeGuides: [SnapLine] = []
+    /// 触觉反馈开关(预留,暂不进 UI)
+    var hapticsEnabled = true
     @Published var bgImage: NSImage? = nil
 
     // 全局/背景/风格
@@ -353,6 +359,23 @@ final class EditorState: ObservableObject {
         CGPoint(x: p.x / size.width * imgW, y: p.y / size.height * imgH)
     }
 
+    // MARK: 智能对齐
+    /// 候选对齐线:画布 6 条 + 其他可见未锁定物体各 6 条(排除当前拖动集合)
+    func snapCandidates(excluding ids: Set<Int>) -> [SnapLine] {
+        var c = SmartGuides.canvasCandidates(w: imgW, h: imgH)
+        for b in boxes where !b.hidden && !b.locked && !ids.contains(b.id) {
+            c.append(contentsOf: SmartGuides.boxCandidates(b))
+        }
+        return c
+    }
+    /// 更新参考线;吸附状态变化(吸附上/脱开)时触发触觉反馈,换线不触发
+    private func updateGuides(_ new: [SnapLine]) {
+        guard new != activeGuides else { return }
+        let wasEmpty = activeGuides.isEmpty
+        activeGuides = new
+        if hapticsEnabled, wasEmpty != new.isEmpty { Haptics.alignment() }
+    }
+
     func boxDown(_ b: BBox, at p: CGPoint, additive: Bool) {
         showingSource = false
         if additive {
@@ -374,14 +397,41 @@ final class EditorState: ObservableObject {
         moveOrigins = [:]
         for m in movableSelection() { moveOrigins[m.id] = CGPoint(x: m.x, y: m.y) }
     }
-    func moveDragged(to p: CGPoint) {
+    func moveDragged(to p: CGPoint, suppressSnap: Bool = false) {
         let dx = p.x - dragStart.x, dy = p.y - dragStart.y
-        for (id, orig) in moveOrigins {
-            if let i = boxes.firstIndex(where: { $0.id == id }) {
-                boxes[i].x = clampD(snap(orig.x + dx), 0, imgW - boxes[i].w)
-                boxes[i].y = clampD(snap(orig.y + dy), 0, imgH - boxes[i].h)
+        // 1) 智能对齐:对平移后的拖动集合包围盒做 6 边线匹配,X/Y 独立
+        var snapDX = 0.0, snapDY = 0.0
+        var snappedX = false, snappedY = false
+        var guides: [SnapLine] = []
+        if smartSnapEnabled && !suppressSnap && !moveOrigins.isEmpty {
+            var minX = Double.infinity, minY = Double.infinity
+            var maxX = -Double.infinity, maxY = -Double.infinity
+            for (id, orig) in moveOrigins {
+                guard let b = boxes.first(where: { $0.id == id }) else { continue }
+                let nx = orig.x + dx, ny = orig.y + dy
+                minX = min(minX, nx); minY = min(minY, ny)
+                maxX = max(maxX, nx + b.w); maxY = max(maxY, ny + b.h)
+            }
+            if minX.isFinite {
+                let rect = CGRect(x: minX, y: minY, width: maxX - minX, height: maxY - minY)
+                let r = SmartGuides.computeSnap(moving: rect,
+                                                candidates: snapCandidates(excluding: Set(moveOrigins.keys)),
+                                                threshold: SmartGuides.threshold)
+                snapDX = r.deltaX; snapDY = r.deltaY
+                snappedX = r.lines.contains { $0.axis == .v }
+                snappedY = r.lines.contains { $0.axis == .h }
+                guides = r.lines
             }
         }
+        // 2) 应用:已智能吸附的轴直接平移;未吸附的轴维持原网格吸附
+        for (id, orig) in moveOrigins {
+            if let i = boxes.firstIndex(where: { $0.id == id }) {
+                let tx = orig.x + dx + snapDX, ty = orig.y + dy + snapDY
+                boxes[i].x = clampD(snappedX ? tx : snap(orig.x + dx), 0, imgW - boxes[i].w)
+                boxes[i].y = clampD(snappedY ? ty : snap(orig.y + dy), 0, imgH - boxes[i].h)
+            }
+        }
+        updateGuides(guides)
     }
     func endDrag() {
         var wasEdit = false
@@ -391,6 +441,7 @@ final class EditorState: ObservableObject {
         }
         dragMode = .none
         moveOrigins = [:]
+        activeGuides = []
         if wasEdit { recordHistory() }
     }
 
@@ -399,7 +450,7 @@ final class EditorState: ObservableObject {
         dragMode = .resize(handle)
         resizeOrig = CGRect(x: b.x, y: b.y, width: b.w, height: b.h)
     }
-    func resizeDragged(id: Int, handle: String, to p: CGPoint) {
+    func resizeDragged(id: Int, handle: String, to p: CGPoint, suppressSnap: Bool = false) {
         guard let i = boxes.firstIndex(where: { $0.id == id }) else { return }
         var x1 = resizeOrig.minX, y1 = resizeOrig.minY
         var x2 = resizeOrig.maxX, y2 = resizeOrig.maxY
@@ -407,20 +458,43 @@ final class EditorState: ObservableObject {
         if handle.contains("e") { x2 = p.x }
         if handle.contains("n") { y1 = p.y }
         if handle.contains("s") { y2 = p.y }
+        // 智能对齐:只对正在拖动的边做匹配(w/e 配垂直线,n/s 配水平线)
+        var smartV: Double? = nil, smartH: Double? = nil
+        var guides: [SnapLine] = []
+        if smartSnapEnabled && !suppressSnap {
+            let candidates = snapCandidates(excluding: [id])
+            if handle.contains("w") || handle.contains("e") {
+                let r = SmartGuides.computeSnap(edge: handle.contains("w") ? x1 : x2, axis: .v,
+                                                candidates: candidates, threshold: SmartGuides.threshold)
+                if r.lines.first != nil { smartV = r.deltaX; guides.append(contentsOf: r.lines) }
+            }
+            if handle.contains("n") || handle.contains("s") {
+                let r = SmartGuides.computeSnap(edge: handle.contains("n") ? y1 : y2, axis: .h,
+                                                candidates: candidates, threshold: SmartGuides.threshold)
+                if r.lines.first != nil { smartH = r.deltaY; guides.append(contentsOf: r.lines) }
+            }
+        }
+        if let d = smartV { if handle.contains("w") { x1 += d } else { x2 += d } }
+        if let d = smartH { if handle.contains("n") { y1 += d } else { y2 += d } }
         x1 = clampD(x1, 0, imgW - 1); x2 = clampD(x2, 1, imgW)
         y1 = clampD(y1, 0, imgH - 1); y2 = clampD(y2, 1, imgH)
         let MIN = EditorState.minBox
         if x2 - x1 < MIN { if handle.contains("w") { x1 = x2 - MIN } else { x2 = x1 + MIN } }
         if y2 - y1 < MIN { if handle.contains("n") { y1 = y2 - MIN } else { y2 = y1 + MIN } }
         if snapToGrid {
-            x1 = clampD(snap(x1), 0, imgW - MIN); x2 = clampD(snap(x2), x1 + MIN, imgW)
-            y1 = clampD(snap(y1), 0, imgH - MIN); y2 = clampD(snap(y2), y1 + MIN, imgH)
+            // 已被智能对齐吸附的边不再落网格
+            if !(smartV != nil && handle.contains("w")) { x1 = clampD(snap(x1), 0, imgW - MIN) }
+            if !(smartV != nil && handle.contains("e")) { x2 = clampD(snap(x2), x1 + MIN, imgW) }
+            if !(smartH != nil && handle.contains("n")) { y1 = clampD(snap(y1), 0, imgH - MIN) }
+            if !(smartH != nil && handle.contains("s")) { y2 = clampD(snap(y2), y1 + MIN, imgH) }
         }
         boxes[i].x = x1; boxes[i].y = y1; boxes[i].w = x2 - x1; boxes[i].h = y2 - y1
+        updateGuides(guides)
     }
 
     func marqueeBegan(at p: CGPoint, additive: Bool) {
         showingSource = false
+        activeGuides = []
         if !additive { selectedIDs.removeAll(); focusID = nil }
         dragMode = .marquee(additive: additive)
         dragStart = p
@@ -476,7 +550,8 @@ final class EditorState: ObservableObject {
                  aesthetics: aesthetics, lighting: lighting, medium: medium, paletteText: paletteText,
                  pasteText: pasteText, parsedSource: parsedSource, parsedElArrayPath: parsedElArrayPath,
                  sourceRefIndexes: boxes.map { $0.srcIndex ?? -1 },
-                 showingSource: showingSource, parsedCount: parsedCount, snapToGrid: snapToGrid)
+                 showingSource: showingSource, parsedCount: parsedCount, snapToGrid: snapToGrid,
+                 smartSnapEnabled: smartSnapEnabled)
     }
     var canUndo: Bool { historyIndex > 0 }
     var canRedo: Bool { historyIndex < history.count - 1 }
@@ -509,6 +584,7 @@ final class EditorState: ObservableObject {
         parsedCount = s.parsedCount
         showingSource = s.showingSource
         snapToGrid = s.snapToGrid
+        smartSnapEnabled = s.smartSnapEnabled
         if parsedSource != nil {
             parsedMeta = makeMeta(parsedSource!)
         } else {

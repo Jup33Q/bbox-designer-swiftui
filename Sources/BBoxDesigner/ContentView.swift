@@ -210,6 +210,9 @@ struct ContentView: View {
                 GhostButton(title: "网格吸附", active: state.snapToGrid) {
                     state.snapToGrid.toggle(); state.recordHistory()
                 }
+                GhostButton(title: "智能对齐", active: state.smartSnapEnabled) {
+                    state.smartSnapEnabled.toggle(); state.recordHistory()
+                }
                 GhostButton(title: "构图参考线", active: state.showGuides) { state.showGuides.toggle() }
                 GhostButton(title: "复制") { state.duplicateSelected() }
                 GhostButton(title: "锁定") { state.toggleSelectionState(\.locked) }

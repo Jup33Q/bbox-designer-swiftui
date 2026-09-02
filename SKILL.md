@@ -12,13 +12,13 @@ description: 本地 SwiftUI 版 BBox 位置设计器(复刻 bbox.toolbuddy.art),
 - 工程:`BBoxDesigner/`(SwiftPM,纯 Command Line Tools 即可编译,无需 Xcode)
 - 打包:`cd BBoxDesigner && scripts/make_app.sh` → 生成 `BBoxDesigner.app`
 - 启动:`open BBoxDesigner/BBoxDesigner.app`
-- 自测:`BBoxDesigner.app/Contents/MacOS/BBoxDesigner --selftest`(27 项 JSON 解析/写回闭环断言)
+- 自测:`BBoxDesigner.app/Contents/MacOS/BBoxDesigner --selftest`(36 项断言:JSON 解析/写回闭环 + 智能对齐吸附)
 - MCP 冒烟:`BBoxDesigner.app/Contents/MacOS/BBoxDesigner --mcptest`
 
 ## 功能对照(与网页版一致)
 
 - 画布:7 档尺寸预设(1024²/1344×768/1408×704/768×1024/768×1152/896×1152/960×1280)、自定义 W×H(64 对齐)、比例锁定(9 种)、参考图(上传/拖拽/⌘⇧V 粘贴)
-- 框编辑:拖动移动、8 手柄缩放、双击空白新建、框选/⌘加选/Shift 范围选、对齐×6、等距×2、复制/锁定/隐藏、网格吸附、三分构图线
+- 框编辑:拖动移动、8 手柄缩放、双击空白新建、框选/⌘加选/Shift 范围选、对齐×6、等距×2、复制/锁定/隐藏、网格吸附、智能对齐吸附(黄色参考线+触觉反馈,⌘ 拖动禁用)、三分构图线
 - 快捷键:⌘Z / ⇧⌘Z 撤销重做、Delete 删除、⌘A 全选、方向键微调(Shift=20px 大步进)
 - 导入:粘贴/选文件解析 Ideogram 4 JSON(bbox 轴序 [ymin,xmin,ymax,xmax] @0–1000;兼容 elements / compositional_deconstruction.elements / objects / boxes;字段别名 desc/description/label/name)
 - 写回:「更新提示词」带差异确认面板(BBox/描述/全局字段/新增/删除),原地更新保留未知字段与键顺序
