@@ -213,6 +213,7 @@ final class FluxGenState: ObservableObject {
         if !styleBits.isEmpty { parts.append("Style: " + styleBits.joined(separator: "; ")) }
         let bg = state.bgDesc.trimmingCharacters(in: .whitespaces)
         if !bg.isEmpty { parts.append("Background: " + bg) }
+        // 拍平提示词只用 desc;annotation 是画布注释,不进提示词
         for (i, b) in state.boxes.enumerated() where !b.desc.trimmingCharacters(in: .whitespaces).isEmpty {
             let bb = state.normToIdeogram(b)
             parts.append("Element \(i + 1) at region [\(bb.map(String.init).joined(separator: ","))]: \(b.desc.trimmingCharacters(in: .whitespaces))")

@@ -7,7 +7,7 @@ let package = Package(
     targets: [
         .executableTarget(
             name: "BBoxDesigner",
-            path: "Sources/BBoxDesigner"
+            path: "Sources"
         )
     ]
 )

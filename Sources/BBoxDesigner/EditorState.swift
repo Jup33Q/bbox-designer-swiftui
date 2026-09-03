@@ -8,6 +8,8 @@ struct BBox: Identifiable, Equatable {
     var id: Int
     var x: Double, y: Double, w: Double, h: Double
     var desc: String = ""
+    /// 画布标签注释(如「左袖」),只留在工作 JSON,不进导出 caption / 提示词
+    var annotation: String = ""
     var type: String = "obj"
     var locked: Bool = false
     var hidden: Bool = false
@@ -763,7 +765,7 @@ final class EditorState: ObservableObject {
             backfillGlobals(from: data)
             return
         }
-        struct El { var rawIndex: Int; var bbox: [Double]; var desc: String; var type: String; var colorPalette: [String] }
+        struct El { var rawIndex: Int; var bbox: [Double]; var desc: String; var annotation: String; var type: String; var colorPalette: [String] }
         var elems: [El] = []
         for (idx, raw) in elArray.enumerated() {
             guard raw.isObject else { continue }
@@ -774,9 +776,10 @@ final class EditorState: ObservableObject {
             let x1 = c[1] / 1000 * imgW, y1 = c[0] / 1000 * imgH
             let x2 = c[3] / 1000 * imgW, y2 = c[2] / 1000 * imgH
             let desc = raw.first(["desc", "description", "label", "name", "caption"])?.stringValue ?? ""
+            let annotation = raw.first(["annotation", "note"])?.stringValue ?? ""
             let type = raw.first(["type", "category", "class"])?.stringValue ?? "obj"
             let cp = raw.first(["color_palette", "colors", "palette"])?.arrayValue?.compactMap { $0.stringValue } ?? []
-            elems.append(El(rawIndex: idx, bbox: [x1, y1, x2, y2], desc: desc, type: type, colorPalette: cp))
+            elems.append(El(rawIndex: idx, bbox: [x1, y1, x2, y2], desc: desc, annotation: annotation, type: type, colorPalette: cp))
         }
         if elems.isEmpty {
             parseError = "未找到可解析的元素"
@@ -798,7 +801,7 @@ final class EditorState: ObservableObject {
             let x = clampD(e.bbox[0], 0, imgW - 1), y = clampD(e.bbox[1], 0, imgH - 1)
             let w = clampD(e.bbox[2] - e.bbox[0], 1, imgW - x)
             let h = clampD(e.bbox[3] - e.bbox[1], 1, imgH - y)
-            return BBox(id: uid, x: x, y: y, w: w, h: h, desc: e.desc, type: e.type, colorPalette: e.colorPalette, srcIndex: e.rawIndex)
+            return BBox(id: uid, x: x, y: y, w: w, h: h, desc: e.desc, annotation: e.annotation, type: e.type, colorPalette: e.colorPalette, srcIndex: e.rawIndex)
         }
         selectedIDs.removeAll()
         focusID = boxes.last?.id
@@ -897,6 +900,12 @@ final class EditorState: ObservableObject {
             el["bbox"] = .arr(normToIdeogram(boxes[bi]).map { .num(Double($0)) })
             if el["desc"] != nil { el["desc"] = .str(boxes[bi].desc) }
             if el["description"] != nil { el["description"] = .str(boxes[bi].desc) }
+            // annotation 只保留在工作 JSON:有值写回,清空则移除键
+            if !boxes[bi].annotation.isEmpty {
+                el["annotation"] = .str(boxes[bi].annotation)
+            } else if el["annotation"] != nil {
+                el["annotation"] = nil
+            }
             if !boxes[bi].colorPalette.isEmpty {
                 el["color_palette"] = .arr(boxes[bi].colorPalette.map { .str($0) })
             } else if el["color_palette"] != nil {
@@ -912,6 +921,7 @@ final class EditorState: ObservableObject {
                 ("desc", .str(boxes[bi].desc))
             ]
             if !boxes[bi].colorPalette.isEmpty { pairs.append(("color_palette", .arr(boxes[bi].colorPalette.map { .str($0) }))) }
+            if !boxes[bi].annotation.isEmpty { pairs.append(("annotation", .str(boxes[bi].annotation))) }
             arr.append(.obj(pairs))
             boxes[bi].srcIndex = arr.count - 1
         }

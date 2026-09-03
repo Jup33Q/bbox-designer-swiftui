@@ -28,6 +28,12 @@ extension Color {
 
 // MARK: - 画布
 
+/// 框标签文本:annotation 优先,无 annotation 时回退 desc 前 14 字
+func boxLabelText(box: BBox, order: Int) -> String {
+    let tag = box.annotation.isEmpty ? String(box.desc.prefix(14)) : box.annotation
+    return "\(order)\(box.locked ? " 🔒" : "")\(tag.isEmpty ? "" : " · " + tag)"
+}
+
 struct CanvasAreaView: View {
     @ObservedObject var state: EditorState
     var maxHeight: CGFloat = 680
@@ -237,15 +243,18 @@ struct BoxView: View {
                             state.doubleTapCanvas(at: p)
                         }
                 )
-            // 序号标签
-            let label = "\(order)\(box.locked ? " 🔒" : "")\(box.desc.isEmpty ? "" : " · " + String(box.desc.prefix(14)))"
+            // 序号标签(annotation 优先,窄框跟随框宽换行,最多 3 行)
+            let label = boxLabelText(box: box, order: order)
             Text(label)
                 .font(.system(size: 11, weight: .bold))
                 .padding(.horizontal, 5)
                 .padding(.vertical, 1)
                 .background(isSelected ? Theme.yellow.opacity(0.9) : Theme.accent.opacity(0.9))
                 .foregroundStyle(Theme.bg)
-                .fixedSize()
+                .fixedSize(horizontal: false, vertical: true)
+                .lineLimit(3)
+                .multilineTextAlignment(.leading)
+                .frame(maxWidth: max(w, 40), alignment: .leading)
                 .offset(y: -19)
                 .allowsHitTesting(false)
             // 8 个 resize 手柄

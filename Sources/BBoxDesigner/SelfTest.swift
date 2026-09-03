@@ -19,8 +19,8 @@ enum SelfTest {
           "compositional_deconstruction": {
             "background": {"bbox":[0,0,1000,1000], "description":"warm blurred room"},
             "elements": [
-              {"type":"obj", "bbox":[100,200,500,600], "description":"a cat on a chair", "color_palette":["#FACC15"]},
-              {"type":"obj", "bbox":[600,100,900,400], "desc":"a lamp"}
+              {"type":"obj", "bbox":[100,200,500,600], "description":"a cat on a chair", "color_palette":["#FACC15"], "annotation":"左袖"},
+              {"type":"obj", "bbox":[600,100,900,400], "desc":"a lamp", "note":"台灯"}
             ]
           },
           "custom_field": {"keep":"me"}
@@ -40,6 +40,8 @@ enum SelfTest {
         check(s.boxes[0].desc == "a cat on a chair", "description 别名读取")
         check(s.boxes[1].desc == "a lamp", "desc 别名读取")
         check(s.boxes[0].colorPalette == ["#FACC15"], "对象 color_palette 读取")
+        check(s.boxes[0].annotation == "左袖", "annotation 读取")
+        check(s.boxes[1].annotation == "台灯", "note 别名读取为 annotation")
 
         // 2) 输出 caption
         let cap = s.buildCaption()
@@ -47,6 +49,7 @@ enum SelfTest {
         check(capStr.contains("\"compositional_deconstruction\""), "caption 含 compositional_deconstruction")
         check(capStr.contains("\"bbox\": [100,200,500,600]"), "caption bbox 归一化单行 [ymin,xmin,ymax,xmax]")
         check(capStr.contains("\"photo\": true"), "style photo=true")
+        check(!capStr.contains("annotation"), "caption 不含 annotation")
 
         // 3) 移动物体 → 写回
         s.selectedIDs = [s.boxes[0].id]
@@ -64,6 +67,7 @@ enum SelfTest {
         check(s.pasteText.contains("\"keep\": \"me\""), "未知字段内容保留")
         // 键顺序:high_level_description 仍在最前
         check(s.pasteText.hasPrefix("{\n  \"high_level_description\""), "键顺序保持")
+        check(s.pasteText.contains("\"annotation\": \"左袖\""), "写回保留 annotation")
 
         // 4) 新增 + 删除元素闭环
         let before = s.boxes.count
@@ -86,6 +90,7 @@ enum SelfTest {
         s2.parse(s.pasteText)
         check(s2.boxes.count == before, "round-trip 再解析元素数一致")
         check(s2.parseError == nil, "round-trip 无错误")
+        check(s2.boxes[0].annotation == "左袖", "round-trip annotation 保留")
 
         // 7) 智能对齐吸附(computeSnap 纯函数 + EditorState 接线)
         let canvas = SmartGuides.canvasCandidates(w: 1000, h: 1000)
@@ -225,6 +230,50 @@ enum SelfTest {
         check(s8.selectedIDs == [c8.id], "选择语义:⌘点击仅剩 1 个不移除")
         s8.endDrag()
         _ = b8
+
+        // 9) 框标签:annotation 优先,回退 desc 前 14 字
+        check(boxLabelText(box: s2.boxes[0], order: 1) == "1 · 左袖", "标签:annotation 优先")
+        var fb = BBox(id: 999, x: 0, y: 0, w: 50, h: 50)
+        fb.desc = "a lamp with a very long shade"
+        check(boxLabelText(box: fb, order: 2) == "2 · a lamp with a ", "标签:无 annotation 回退 desc 前 14 字")
+        check(boxLabelText(box: BBox(id: 998, x: 0, y: 0, w: 50, h: 50), order: 3) == "3", "标签:无 desc 无 annotation 只有序号")
+
+        // 10) M1:Ollama 响应 JSON 容错解析(合法 / 缺字段 / 带多余文本)
+        // 10.1 合法完整响应
+        let ovOK = """
+        {"style_description":"cinematic photo","high_level_description":"木桌上的静物",
+         "entities":[
+           {"label":"red apple","category":"other","desc":"红色苹果","color_palette":["#E03131"]},
+           {"label":"blue coffee cup","category":"furniture","desc":"蓝色咖啡杯","color_palette":["#1C7ED6","#FFFFFF"]}
+         ]}
+        """
+        let rOK = OllamaVision.parseEntityResponse(ovOK)
+        check(rOK?.styleDescription == "cinematic photo", "Ollama 解析:style_description")
+        check(rOK?.highLevelDescription == "木桌上的静物", "Ollama 解析:high_level_description")
+        check(rOK?.entities.count == 2, "Ollama 解析:2 个实体")
+        check(rOK?.entities[0].label == "red apple" && rOK?.entities[0].category == .other, "Ollama 解析:label/category")
+        check(rOK?.entities[1].colorPalette == ["#1C7ED6", "#FFFFFF"], "Ollama 解析:color_palette")
+        // 10.2 缺字段:无 style/entities 条目缺 category/desc/color_palette → 默认值,缺 label 的条目被丢弃
+        let ovMissing = """
+        {"entities":[{"label":"silver key"},{"desc":"没有 label 的坏条目"}]}
+        """
+        let rMiss = OllamaVision.parseEntityResponse(ovMissing)
+        check(rMiss != nil, "Ollama 容错:缺字段仍可解析")
+        check(rMiss?.styleDescription == "" && rMiss?.highLevelDescription == "", "Ollama 容错:缺 style/high_level 给空串")
+        check(rMiss?.entities.count == 1, "Ollama 容错:缺 label 的条目丢弃")
+        check(rMiss?.entities[0].category == .other, "Ollama 容错:缺 category 归 other")
+        check(rMiss?.entities[0].desc == "silver key", "Ollama 容错:缺 desc 回退 label")
+        check(rMiss?.entities[0].colorPalette == [], "Ollama 容错:缺 color_palette 给空数组")
+        // 10.3 带多余文本(markdown 围栏 + 首尾噪音) → parseLoose 提取首个 {...} 块
+        let ovNoisy = "好的,这是识别结果:\n```json\n{\"style_description\":\"anime\",\"high_level_description\":\"h\",\"entities\":[{\"label\":\"oak desk\",\"category\":\"furniture\",\"desc\":\"橡木书桌\",\"color_palette\":[]}]}\n```\n希望对你有帮助。"
+        let rNoisy = OllamaVision.parseEntityResponse(ovNoisy)
+        check(rNoisy?.entities.count == 1 && rNoisy?.entities[0].label == "oak desk", "Ollama 容错:多余文本中提取 JSON 块")
+        check(rNoisy?.styleDescription == "anime", "Ollama 容错:噪音文本中 style 正确")
+        // 10.4 完全无 JSON → nil(触发 recognizeEntities 重试 1 次)
+        check(OllamaVision.parseEntityResponse("对不起,我看不清这张图") == nil, "Ollama 容错:无 JSON 返回 nil")
+        // 10.5 未知 category 值归并 other
+        let rWeird = OllamaVision.parseEntityResponse("{\"entities\":[{\"label\":\"x\",\"category\":\"vehicle\"}]}")
+        check(rWeird?.entities[0].category == .other, "Ollama 容错:未知 category 归 other")
 
         print(failures == 0 ? "ALL PASS" : "\(failures) FAILURES")
         return failures == 0 ? 0 : 1

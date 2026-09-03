@@ -315,6 +315,15 @@ struct BBoxDesignerApp: App {
                 exit(code)
             }
         }
+        if let i = CommandLine.arguments.firstIndex(of: "--ollama-smoke"), CommandLine.arguments.count > i + 1 {
+            let path = CommandLine.arguments[i + 1]
+            // 可选第三参:模型名
+            let model = CommandLine.arguments.count > i + 2 ? CommandLine.arguments[i + 2] : OllamaVision.defaultModel
+            Task {
+                let code = await OllamaVision.smokeTest(imagePath: path, model: model)
+                exit(code)
+            }
+        }
         if CommandLine.arguments.contains("--mcptest") {
             Task {
                 let client = FluxMCPClient()

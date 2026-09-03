@@ -219,7 +219,7 @@ struct ObjectListView: View {
                 .font(.system(size: 11, weight: .bold, design: .monospaced))
                 .foregroundStyle(active ? Theme.bg : Theme.dim)
                 .frame(width: 18)
-            Text(box.desc.isEmpty ? "未命名物体" : String(box.desc.prefix(22)))
+            Text(!box.annotation.isEmpty ? box.annotation : (box.desc.isEmpty ? "未命名物体" : String(box.desc.prefix(22))))
                 .font(.system(size: 12))
                 .foregroundStyle(active ? Theme.bg : Theme.text)
                 .lineLimit(1)
@@ -267,6 +267,14 @@ struct SelectedInfoView: View {
                 Text("拖动任意一个可整体移动 · Delete 批量删除 · 列表 Shift 可范围多选")
                     .font(.system(size: 11)).foregroundStyle(Theme.dim)
             } else if let b = state.focusBox, let idx = state.boxes.firstIndex(where: { $0.id == b.id }) {
+                LabeledEditor(
+                    label: "注释 (annotation)",
+                    text: Binding(get: { state.boxes[idx].annotation }, set: { state.boxes[idx].annotation = $0 }),
+                    placeholder: "如画布标签:左袖",
+                    lines: 1,
+                    onBegin: { state.beginTextHistory() },
+                    onCommit: { state.commitTextHistory() }
+                )
                 LabeledEditor(
                     label: "物品名称 / 描述 (desc)",
                     text: Binding(get: { state.boxes[idx].desc }, set: { state.boxes[idx].desc = $0 }),
