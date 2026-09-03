@@ -136,6 +136,96 @@ enum SelfTest {
         s4.endDrag()
         check(s4.activeGuides.isEmpty, "吸附:endDrag 清空参考线")
 
+        // 8) 多选整体拖动(PLAN-multi-drag §3)
+        // 精确布点助手:新建后改写到指定几何(50x50),返回最新值
+        func mkBox(_ st: EditorState, _ x: Double, _ y: Double, locked: Bool = false, hidden: Bool = false) -> BBox {
+            let b = st.addBox(at: CGPoint(x: x + 25, y: y + 25))
+            if let i = st.boxes.firstIndex(where: { $0.id == b.id }) {
+                st.boxes[i].x = x; st.boxes[i].y = y; st.boxes[i].w = 50; st.boxes[i].h = 50
+                st.boxes[i].locked = locked; st.boxes[i].hidden = hidden
+            }
+            return st.boxes.first(where: { $0.id == b.id })!
+        }
+        // 8.1 整组移动:A(100,100) B(300,300) 全选,拖 dx=20,dy=30 → A(120,130) B(320,330)
+        let s5 = EditorState()
+        s5.imgW = 1024; s5.imgH = 1024; s5.smartSnapEnabled = false
+        let a5 = mkBox(s5, 100, 100)
+        let b5 = mkBox(s5, 300, 300)
+        s5.recordHistory() // undo 断言的拖动前基线
+        s5.selectAll()
+        s5.boxDown(a5, at: CGPoint(x: 100, y: 100), additive: false)
+        s5.moveDragged(to: CGPoint(x: 120, y: 130))
+        let a5m = s5.boxes.first(where: { $0.id == a5.id })!
+        let b5m = s5.boxes.first(where: { $0.id == b5.id })!
+        check(a5m.x == 120 && a5m.y == 130 && b5m.x == 320 && b5m.y == 330, "多选拖动:整组移动相对偏移不变")
+        check(s5.selectedIDs.count == 2, "多选拖动:点击组内框保持多选")
+        s5.endDrag()
+        // 8.2 统一钳制(右):拖 dx=+10000 → 组右缘贴 imgW,B.x=imgW-50=974,A.x=774(间距 200 保持)
+        let s6 = EditorState()
+        s6.imgW = 1024; s6.imgH = 1024; s6.smartSnapEnabled = false
+        let a6 = mkBox(s6, 100, 100)
+        let b6 = mkBox(s6, 300, 300)
+        s6.selectAll()
+        s6.boxDown(a6, at: CGPoint(x: 100, y: 100), additive: false)
+        s6.moveDragged(to: CGPoint(x: 100 + 10000, y: 100))
+        let a6r = s6.boxes.first(where: { $0.id == a6.id })!
+        let b6r = s6.boxes.first(where: { $0.id == b6.id })!
+        check(b6r.x == 974 && a6r.x == 774, "多选拖动:统一钳制右缘整组贴边不变形")
+        // 8.3 统一钳制(左):同一拖动会话内拖 dx=-10000 → A.x=0,B.x=200
+        s6.moveDragged(to: CGPoint(x: 100 - 10000, y: 100))
+        let a6l = s6.boxes.first(where: { $0.id == a6.id })!
+        let b6l = s6.boxes.first(where: { $0.id == b6.id })!
+        check(a6l.x == 0 && b6l.x == 200, "多选拖动:统一钳制左缘整组贴边不变形")
+        s6.endDrag()
+        // 8.4 锁定框不随动:A locked,全选 A+B 拖动 → A 不动,B 动;钳制只按可动框(B)计算
+        let s7 = EditorState()
+        s7.imgW = 1024; s7.imgH = 1024; s7.smartSnapEnabled = false
+        let a7 = mkBox(s7, 100, 100, locked: true)
+        let b7 = mkBox(s7, 300, 300)
+        s7.selectAll()
+        s7.boxDown(b7, at: CGPoint(x: 300, y: 300), additive: false)
+        s7.moveDragged(to: CGPoint(x: 300 + 10000, y: 300))
+        let a7m = s7.boxes.first(where: { $0.id == a7.id })!
+        let b7m = s7.boxes.first(where: { $0.id == b7.id })!
+        check(a7m.x == 100 && a7m.y == 100 && b7m.x == 974 && b7m.y == 300, "多选拖动:锁定框不随动且钳制只按可动框")
+        s7.endDrag()
+        // 8.5 隐藏框不随动
+        let s9 = EditorState()
+        s9.imgW = 1024; s9.imgH = 1024; s9.smartSnapEnabled = false
+        let a9 = mkBox(s9, 100, 100, hidden: true)
+        let b9 = mkBox(s9, 300, 300)
+        s9.selectAll()
+        s9.boxDown(b9, at: CGPoint(x: 300, y: 300), additive: false)
+        s9.moveDragged(to: CGPoint(x: 300 + 10000, y: 300))
+        let a9m = s9.boxes.first(where: { $0.id == a9.id })!
+        let b9m = s9.boxes.first(where: { $0.id == b9.id })!
+        check(a9m.x == 100 && a9m.y == 100 && b9m.x == 974 && b9m.y == 300, "多选拖动:隐藏框不随动且钳制只按可动框")
+        s9.endDrag()
+        // 8.6 undo 一次全部归位(基于 8.1 的 s5)
+        s5.undo()
+        let a5u = s5.boxes.first(where: { $0.id == a5.id })!
+        let b5u = s5.boxes.first(where: { $0.id == b5.id })!
+        check(a5u.x == 100 && a5u.y == 100 && b5u.x == 300 && b5u.y == 300, "多选拖动:undo 一次全部归位")
+        // 8.7 选择语义回归:组内保持 / 组外单选 / ⌘仅剩1个不移除
+        let s8 = EditorState()
+        let a8 = mkBox(s8, 100, 100)
+        let b8 = mkBox(s8, 300, 300)
+        let c8 = mkBox(s8, 600, 600)
+        s8.selectAll()
+        s8.boxDown(a8, at: CGPoint(x: 100, y: 100), additive: false)
+        check(s8.selectedIDs.count == 3, "选择语义:点击组内框保持多选")
+        s8.endDrag()
+        s8.boxDown(c8, at: CGPoint(x: 600, y: 600), additive: true) // 先把 c8 移出组
+        check(s8.selectedIDs.count == 2 && !s8.selectedIDs.contains(c8.id), "选择语义:⌘点击组内框移出组")
+        s8.endDrag()
+        s8.boxDown(c8, at: CGPoint(x: 600, y: 600), additive: false) // c8 在组外 → 单选
+        check(s8.selectedIDs == [c8.id], "选择语义:点击组外框变单选")
+        s8.endDrag()
+        s8.boxDown(c8, at: CGPoint(x: 600, y: 600), additive: true) // 仅剩 1 个,⌘不移除
+        check(s8.selectedIDs == [c8.id], "选择语义:⌘点击仅剩 1 个不移除")
+        s8.endDrag()
+        _ = b8
+
         print(failures == 0 ? "ALL PASS" : "\(failures) FAILURES")
         return failures == 0 ? 0 : 1
     }

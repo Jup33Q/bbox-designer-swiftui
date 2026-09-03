@@ -76,6 +76,8 @@ final class EditorState: ObservableObject {
     @Published var smartSnapEnabled = true
     /// 智能对齐参考线(瞬态,不进历史)
     @Published var activeGuides: [SnapLine] = []
+    /// 多选拖动期间的组包围盒(瞬态,不进历史)
+    @Published var groupBounds: CGRect? = nil
     /// 触觉反馈开关(预留,暂不进 UI)
     var hapticsEnabled = true
     @Published var bgImage: NSImage? = nil
@@ -398,39 +400,50 @@ final class EditorState: ObservableObject {
         for m in movableSelection() { moveOrigins[m.id] = CGPoint(x: m.x, y: m.y) }
     }
     func moveDragged(to p: CGPoint, suppressSnap: Bool = false) {
-        let dx = p.x - dragStart.x, dy = p.y - dragStart.y
-        // 1) 智能对齐:对平移后的拖动集合包围盒做 6 边线匹配,X/Y 独立
+        guard !moveOrigins.isEmpty else { return }
+        let rawDX = p.x - dragStart.x, rawDY = p.y - dragStart.y
+        // 1) 组包围盒(按 origin + 当前尺寸;锁定/隐藏框不在 moveOrigins 里)
+        var uMinX = Double.infinity, uMinY = Double.infinity
+        var uMaxX = -Double.infinity, uMaxY = -Double.infinity
+        for (id, orig) in moveOrigins {
+            guard let b = boxes.first(where: { $0.id == id }) else { continue }
+            uMinX = min(uMinX, orig.x); uMinY = min(uMinY, orig.y)
+            uMaxX = max(uMaxX, orig.x + b.w); uMaxY = max(uMaxY, orig.y + b.h)
+        }
+        guard uMinX.isFinite else { return }
+        // 2) 智能对齐:对 raw delta 平移后的组包围盒做 6 边线匹配,X/Y 独立
         var snapDX = 0.0, snapDY = 0.0
         var snappedX = false, snappedY = false
         var guides: [SnapLine] = []
-        if smartSnapEnabled && !suppressSnap && !moveOrigins.isEmpty {
-            var minX = Double.infinity, minY = Double.infinity
-            var maxX = -Double.infinity, maxY = -Double.infinity
-            for (id, orig) in moveOrigins {
-                guard let b = boxes.first(where: { $0.id == id }) else { continue }
-                let nx = orig.x + dx, ny = orig.y + dy
-                minX = min(minX, nx); minY = min(minY, ny)
-                maxX = max(maxX, nx + b.w); maxY = max(maxY, ny + b.h)
-            }
-            if minX.isFinite {
-                let rect = CGRect(x: minX, y: minY, width: maxX - minX, height: maxY - minY)
-                let r = SmartGuides.computeSnap(moving: rect,
-                                                candidates: snapCandidates(excluding: Set(moveOrigins.keys)),
-                                                threshold: SmartGuides.threshold)
-                snapDX = r.deltaX; snapDY = r.deltaY
-                snappedX = r.lines.contains { $0.axis == .v }
-                snappedY = r.lines.contains { $0.axis == .h }
-                guides = r.lines
-            }
+        if smartSnapEnabled && !suppressSnap {
+            let rect = CGRect(x: uMinX + rawDX, y: uMinY + rawDY,
+                              width: uMaxX - uMinX, height: uMaxY - uMinY)
+            let r = SmartGuides.computeSnap(moving: rect,
+                                            candidates: snapCandidates(excluding: Set(moveOrigins.keys)),
+                                            threshold: SmartGuides.threshold)
+            snapDX = r.deltaX; snapDY = r.deltaY
+            snappedX = r.lines.contains { $0.axis == .v }
+            snappedY = r.lines.contains { $0.axis == .h }
+            guides = r.lines
         }
-        // 2) 应用:已智能吸附的轴直接平移;未吸附的轴维持原网格吸附
+        // 3) delta 定稿:吸附轴用吸附后的 delta;未吸附轴网格吸附(对 delta 本身取整,保持组内相对位置)
+        var dx = snappedX ? rawDX + snapDX
+                          : (snapToGrid ? (rawDX / EditorState.gridSize).rounded() * EditorState.gridSize : rawDX)
+        var dy = snappedY ? rawDY + snapDY
+                          : (snapToGrid ? (rawDY / EditorState.gridSize).rounded() * EditorState.gridSize : rawDY)
+        // 4) 整组统一钳制:delta 可行域由组包围盒决定,全组应用同一 delta,相对布局永不变形
+        dx = clampD(dx, -uMinX, imgW - uMaxX)
+        dy = clampD(dy, -uMinY, imgH - uMaxY)
         for (id, orig) in moveOrigins {
             if let i = boxes.firstIndex(where: { $0.id == id }) {
-                let tx = orig.x + dx + snapDX, ty = orig.y + dy + snapDY
-                boxes[i].x = clampD(snappedX ? tx : snap(orig.x + dx), 0, imgW - boxes[i].w)
-                boxes[i].y = clampD(snappedY ? ty : snap(orig.y + dy), 0, imgH - boxes[i].h)
+                boxes[i].x = orig.x + dx
+                boxes[i].y = orig.y + dy
             }
         }
+        // 5) 组包围盒虚线框(多选拖动期间瞬态展示,不进历史)
+        groupBounds = moveOrigins.count > 1
+            ? CGRect(x: uMinX + dx, y: uMinY + dy, width: uMaxX - uMinX, height: uMaxY - uMinY)
+            : nil
         updateGuides(guides)
     }
     func endDrag() {
@@ -442,6 +455,7 @@ final class EditorState: ObservableObject {
         dragMode = .none
         moveOrigins = [:]
         activeGuides = []
+        groupBounds = nil
         if wasEdit { recordHistory() }
     }
 

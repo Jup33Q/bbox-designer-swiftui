@@ -150,6 +150,15 @@ struct CanvasAreaView: View {
                 }
             }
 
+            // 多选拖动组包围盒(黄色虚线)
+            if let g = state.groupBounds {
+                Rectangle()
+                    .stroke(Theme.yellow, style: StrokeStyle(lineWidth: 1, dash: [5, 4]))
+                    .frame(width: g.width * scale, height: g.height * scale)
+                    .offset(x: g.minX * scale, y: g.minY * scale)
+                    .allowsHitTesting(false)
+            }
+
             // 框选矩形
             if let r = state.marqueeRect {
                 Rectangle()
