@@ -370,12 +370,11 @@ final class EditorState: ObservableObject {
         }
         return c
     }
-    /// 更新参考线;吸附状态变化(吸附上/脱开)时触发触觉反馈,换线不触发
+    /// 更新参考线;每次吸附生效(吸附上或换到新的吸附线)都触发触觉反馈,脱开不触发
     private func updateGuides(_ new: [SnapLine]) {
         guard new != activeGuides else { return }
-        let wasEmpty = activeGuides.isEmpty
         activeGuides = new
-        if hapticsEnabled, wasEmpty != new.isEmpty { Haptics.alignment() }
+        if hapticsEnabled, !new.isEmpty { Haptics.alignment() }
     }
 
     func boxDown(_ b: BBox, at p: CGPoint, additive: Bool) {
