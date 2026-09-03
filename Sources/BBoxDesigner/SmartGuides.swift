@@ -78,10 +78,14 @@ enum SmartGuides {
 enum Haptics {
     private static var lastFiredAt: TimeInterval = 0
     /// 对齐触觉反馈;60ms 节流,防止 delta 抖动时连发。无 Force Touch 触摸板时静默跳过。
+    /// 用更强的 .generic 模式 + 双脉冲,比 .alignment 更明显的"咔哒"感。
     static func alignment() {
         let now = ProcessInfo.processInfo.systemUptime
         guard now - lastFiredAt > 0.06 else { return }
         lastFiredAt = now
-        NSHapticFeedbackManager.defaultPerformer.perform(.alignment, performanceTime: .default)
+        NSHapticFeedbackManager.defaultPerformer.perform(.generic, performanceTime: .now)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.09) {
+            NSHapticFeedbackManager.defaultPerformer.perform(.generic, performanceTime: .now)
+        }
     }
 }
