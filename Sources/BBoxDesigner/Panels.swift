@@ -609,3 +609,331 @@ struct FluxGenView: View {
         }
     }
 }
+
+// MARK: - ✨ AI 自动标注(M5;M1 OllamaVision → M3 SAM3Grounder → M4 AnnotatePipeline 纯函数后端的 UI 壳)
+
+/// 逐实体进度状态(识别中/定位中/完成/失败/离线无 bbox)。
+enum AIEntityStatus: Equatable {
+    case pending            // 排队(Ollama 识别阶段)
+    case locating           // SAM3 定位中
+    case done(Double)       // 定位完成(最高 score)
+    case failed(String)     // 定位失败/在线但未检出
+    case noBBox             // SAM3 离线降级:仅清单无 bbox(仍可导入画布)
+}
+
+/// 管线阶段(面板顶部状态行)。
+enum AIAnnotatePhase: Equatable {
+    case idle, recognizing, grounding, done
+    case failed(String)
+}
+
+/// 面板行状态映射(纯函数,--selftest 直接断言):
+/// 识别中 → pending;定位中 → locating;完成后按 GroundedRecognition 的 resolved/pending 映射;
+/// 离线降级全部 noBBox(清单仍可导入)。
+enum AIStatusMapper {
+    static func rowStatus(label: String, grounded: SAM3Grounder.GroundedRecognition?, phase: AIAnnotatePhase) -> AIEntityStatus {
+        switch phase {
+        case .idle, .recognizing: return .pending
+        case .grounding: return .locating
+        case .failed(let msg): return .failed(msg)
+        case .done:
+            guard let g = grounded else { return .pending }
+            if !g.sam3Online { return .noBBox }
+            let insts = g.instances(forLabel: label)
+            guard let best = insts.max(by: { $0.score < $1.score }) else { return .failed("未检出") }
+            return .done(best.score)
+        }
+    }
+}
+
+/// 进度列表行:entityIndex 指向 grounded.recognition.entities 下标(label 编辑后 ⟳ 重跑时写回)。
+struct AIEntityRow: Identifiable {
+    let id = UUID()
+    var entityIndex: Int
+    var label: String
+    var category: OllamaVision.AnnotateEntity.Category
+    var status: AIEntityStatus = .pending
+}
+
+@MainActor
+final class AIAnnotateState: ObservableObject {
+    @Published var models: [String] = [OllamaVision.defaultModel]
+    @Published var selectedModel: String = OllamaVision.defaultModel
+    @Published var phase: AIAnnotatePhase = .idle
+    @Published var rows: [AIEntityRow] = []
+    @Published var statusNote: String = ""
+    @Published var captionFull: String? = nil
+    @Published var captionCollapsed: String? = nil
+    @Published private(set) var grounded: SAM3Grounder.GroundedRecognition? = nil
+
+    private var imageData: Data? = nil
+    private var imageSize: (w: Double, h: Double)? = nil
+    private var uploadedImageName: String? = nil
+    private var rerunning = false
+
+    var running: Bool { phase == .recognizing || phase == .grounding }
+    var isFailed: Bool { if case .failed = phase { return true }; return false }
+
+    static func pngData(_ img: NSImage) -> Data? {
+        guard let tiff = img.tiffRepresentation, let rep = NSBitmapImageRep(data: tiff) else { return nil }
+        return rep.representation(using: .png, properties: [:])
+    }
+
+    /// 启动时填充模型下拉(/api/tags 过滤 vision 能力,接口失败回退 ollama list)。
+    func loadModels() async {
+        let ms = await OllamaVision.listVisionModels()
+        if !ms.isEmpty { models = ms }
+        if !models.contains(selectedModel) {
+            selectedModel = models.contains(OllamaVision.defaultModel) ? OllamaVision.defaultModel : (models.first ?? OllamaVision.defaultModel)
+        }
+    }
+
+    /// 「开始标注」:M1 识别 → M3 定位 → M4 后处理/组装,全程 async,主线程零阻塞。
+    func run(editor: EditorState) async {
+        guard !running else { return }
+        guard let img = editor.bgImage, let data = Self.pngData(img) else {
+            statusNote = "请先导入图片(拖入 / 粘贴 / 选择文件)"
+            return
+        }
+        imageData = data
+        imageSize = SAM3Grounder.imageSize(data)
+        uploadedImageName = nil
+        captionFull = nil; captionCollapsed = nil; grounded = nil; rows = []
+        phase = .recognizing
+        statusNote = "Ollama 识别中(模型 \(selectedModel);首次调用需加载模型,可能 1–2 分钟)…"
+        do {
+            let (rec, timings) = try await OllamaVision.recognizeEntities(imageData: data, model: selectedModel, log: { _ in })
+            guard !rec.entities.isEmpty else {
+                phase = .failed("empty")
+                statusNote = "识别完成但实体清单为空,请换图或换模型重试"
+                return
+            }
+            rows = rec.entities.enumerated().map {
+                AIEntityRow(entityIndex: $0.offset, label: $0.element.label, category: $0.element.category, status: .locating)
+            }
+            phase = .grounding
+            statusNote = "SAM3 定位中(\(rec.entities.count) 实体;ComfyUI 离线时自动降级为仅清单)…"
+            let g = await SAM3Grounder.ground(imageData: data, recognition: rec, log: { _ in })
+            grounded = g
+            rebuildCaptions()
+            phase = .done
+            statusNote = g.sam3Online
+                ? "完成:\(g.note);识别 \(timings.summary)"
+                : "SAM3 离线降级:\(g.note);清单已就绪,可导入画布后手动标框"
+        } catch {
+            phase = .failed("\(error)")
+            statusNote = "识别失败:\(error)(Ollama 未在线或模型不可用?)"
+        }
+    }
+
+    /// ⟳ 单实体重跑:改 label 措辞后走 M3 逐实体通道(含同义词回退),结果写回并重出 caption。
+    func rerun(_ rowID: UUID) async {
+        guard !running, !rerunning,
+              let g = grounded, g.sam3Online,
+              let data = imageData, let size = imageSize,
+              let ri = rows.firstIndex(where: { $0.id == rowID }) else { return }
+        rerunning = true
+        defer { rerunning = false }
+        let label = rows[ri].label.trimmingCharacters(in: .whitespaces)
+        guard !label.isEmpty, g.recognition.entities.indices.contains(rows[ri].entityIndex) else { return }
+        rows[ri].status = .locating
+        do {
+            if uploadedImageName == nil {
+                uploadedImageName = try await SAM3Grounder.uploadImage(host: SAM3Grounder.defaultHost,
+                                                                       data: data, filename: "bbdesigner_m5_upload.png")
+            }
+            let result = await SAM3Grounder.detectPerEntity(host: SAM3Grounder.defaultHost,
+                                                            imageName: uploadedImageName!, labels: [label])
+            let dets = result[label] ?? []
+            var g2 = g
+            let oldLabel = g2.recognition.entities[rows[ri].entityIndex].label
+            g2.recognition.entities[rows[ri].entityIndex].label = label
+            g2.instances.removeAll { $0.label == oldLabel || $0.label == label }
+            if !dets.isEmpty {
+                g2.instances.append(contentsOf: SAM3Grounder.makeInstances(label: label, detections: dets,
+                                                                           imageW: size.w, imageH: size.h))
+            }
+            grounded = g2
+            rebuildCaptions()
+        } catch {
+            rows[ri].status = .failed("\(error)")
+        }
+    }
+
+    /// M4:process → buildCaption(全量) + collapseCaption(生成视图),并刷新逐实体状态。
+    private func rebuildCaptions() {
+        guard let g = grounded else { return }
+        let elements = AnnotatePipeline.process(g)
+        let full = AnnotatePipeline.buildCaption(from: g, elements: elements)
+        captionFull = JValWriter.compact(full)
+        captionCollapsed = JValWriter.compact(AnnotatePipeline.collapseCaption(full: full, elements: elements))
+        for i in rows.indices {
+            rows[i].status = AIStatusMapper.rowStatus(label: rows[i].label, grounded: g, phase: .done)
+        }
+    }
+
+    /// 「导入画布」:caption 字符串直接喂 EditorState.parse(零新解析代码,写回/差异确认闭环免费复用)。
+    func importToCanvas(editor: EditorState) {
+        guard let cap = captionFull else { return }
+        editor.parse(cap)
+    }
+}
+
+struct AIAnnotateView: View {
+    @ObservedObject var state: EditorState
+    @StateObject private var ai = AIAnnotateState()
+    @State private var dropHover = false
+
+    var body: some View {
+        SectionCard(title: "✨ AI 自动标注", trailing: ai.running ? "运行中" : (ai.captionFull != nil ? "就绪" : "Ollama + SAM3")) {
+            // 1) 图片导入:拖入/粘贴/选择,落到与参考图同一条 bgImage 通道(同时成为画布底面背景)
+            dropZone
+            HStack(spacing: 6) {
+                GhostButton(title: "粘贴图片") {
+                    if let img = NSPasteboard.general.readObjects(forClasses: [NSImage.self])?.first as? NSImage {
+                        state.bgImage = img
+                        state.showToast("标注用图已就位")
+                    }
+                }
+                GhostButton(title: "选择图片") {
+                    let panel = NSOpenPanel()
+                    panel.allowedContentTypes = [.image]
+                    panel.allowsMultipleSelection = false
+                    if panel.runModal() == .OK, let url = panel.url, let img = NSImage(contentsOf: url) {
+                        state.bgImage = img
+                        state.showToast("标注用图已就位")
+                    }
+                }
+                Spacer()
+            }
+            // 2) 模型下拉(启动时 listVisionModels 填充,默认 qwen3.8:27b-mlx)
+            HStack(spacing: 6) {
+                Text("模型").font(.system(size: 11)).foregroundStyle(Theme.dim)
+                Picker("模型", selection: $ai.selectedModel) {
+                    ForEach(ai.models, id: \.self) { Text($0).tag($0) }
+                }
+                .labelsHidden()
+                .pickerStyle(.menu)
+                Spacer()
+            }
+            // 3) 开始标注 + 逐阶段状态(模型冷启动提示)
+            HStack(spacing: 8) {
+                AccentButton(title: "开始标注", disabled: state.bgImage == nil || ai.running) {
+                    Task { await ai.run(editor: state) }
+                }
+                if ai.running { ProgressView().controlSize(.small) }
+                Spacer()
+            }
+            if !ai.statusNote.isEmpty {
+                Text(ai.statusNote)
+                    .font(.system(size: 11))
+                    .foregroundStyle(ai.isFailed ? Theme.red : Theme.dim)
+            }
+            // 4) 逐实体进度列表(label 可编辑 + ⟳ 单独重跑)
+            if !ai.rows.isEmpty { entityList }
+            // 5) 出口:导入画布 / 复制 JSON / 复制为提示词(生成视图)
+            HStack(spacing: 6) {
+                AccentButton(title: "导入画布", color: Theme.green, disabled: ai.captionFull == nil) {
+                    ai.importToCanvas(editor: state)
+                }
+                GhostButton(title: "复制 JSON", disabled: ai.captionFull == nil) {
+                    if let c = ai.captionFull { state.copyText(c, "全量 caption JSON 已复制") }
+                }
+                GhostButton(title: "复制为提示词(生成视图)", disabled: ai.captionCollapsed == nil) {
+                    if let c = ai.captionCollapsed { state.copyText(c, "生成视图(折叠 3–6 主元素)已复制") }
+                }
+                Spacer()
+            }
+        }
+        .task { await ai.loadModels() }
+    }
+
+    var dropZone: some View {
+        ZStack {
+            if let img = state.bgImage {
+                HStack(spacing: 8) {
+                    Image(nsImage: img)
+                        .resizable()
+                        .aspectRatio(contentMode: .fit)
+                        .frame(maxWidth: 72, maxHeight: 72)
+                        .clipShape(RoundedRectangle(cornerRadius: 6))
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text("标注用图已就位(即画布底面背景)").font(.system(size: 11)).foregroundStyle(Theme.text)
+                        Text("拖入新图替换 · ⌥B 显隐底图 · 顶栏调透明度").font(.system(size: 10)).foregroundStyle(Theme.dim)
+                    }
+                    Spacer()
+                }
+            } else {
+                VStack(spacing: 4) {
+                    Text("拖入图片到此处").font(.system(size: 12)).foregroundStyle(Theme.dim)
+                    Text("图片同时成为画布底面背景(bbox 叠图对照)").font(.system(size: 10)).foregroundStyle(Theme.dim.opacity(0.7))
+                }
+                .frame(maxWidth: .infinity)
+                .frame(height: 72)
+            }
+        }
+        .padding(6)
+        .background(Theme.surface2)
+        .overlay(RoundedRectangle(cornerRadius: 8).stroke(dropHover ? Theme.accent : Theme.border,
+                                                          style: StrokeStyle(lineWidth: 1, dash: [5, 4])))
+        .clipShape(RoundedRectangle(cornerRadius: 8))
+        .onDrop(of: [.image], isTargeted: $dropHover) { providers in
+            for p in providers {
+                _ = p.loadDataRepresentation(forTypeIdentifier: "public.image") { data, _ in
+                    if let data, let img = NSImage(data: data) {
+                        DispatchQueue.main.async {
+                            state.bgImage = img
+                            state.showToast("标注用图已就位")
+                        }
+                    }
+                }
+            }
+            return true
+        }
+    }
+
+    var entityList: some View {
+        ScrollView {
+            VStack(spacing: 3) {
+                ForEach($ai.rows) { $row in
+                    HStack(spacing: 6) {
+                        statusIcon(row.status)
+                        TextField("", text: $row.label)
+                            .textFieldStyle(.plain)
+                            .font(.system(size: 11, design: .monospaced))
+                            .foregroundStyle(Theme.text)
+                            .padding(.horizontal, 5).padding(.vertical, 3)
+                            .background(Theme.surface2)
+                            .overlay(RoundedRectangle(cornerRadius: 5).stroke(Theme.border, lineWidth: 1))
+                        Text(row.category.rawValue)
+                            .font(.system(size: 9))
+                            .foregroundStyle(Theme.dim)
+                            .frame(width: 74, alignment: .leading)
+                            .lineLimit(1)
+                        GhostButton(title: "⟳", disabled: ai.running || !(ai.grounded?.sam3Online ?? false)) {
+                            Task { await ai.rerun(row.id) }
+                        }
+                        .help("改 label 措辞后单独重跑该实体的 SAM3 定位")
+                    }
+                }
+            }
+        }
+        .frame(maxHeight: 200)
+    }
+
+    @ViewBuilder
+    func statusIcon(_ st: AIEntityStatus) -> some View {
+        switch st {
+        case .pending:
+            Text("⏳").font(.system(size: 11)).help("排队 / 识别中")
+        case .locating:
+            Text("⏳").font(.system(size: 11)).help("SAM3 定位中")
+        case .done(let s):
+            Text("✅").font(.system(size: 11)).help("定位完成,score \(String(format: "%.2f", s))")
+        case .failed(let m):
+            Text("❌").font(.system(size: 11)).help(m)
+        case .noBBox:
+            Text("▫️").font(.system(size: 11)).help("SAM3 离线:无 bbox(清单仍可导入画布)")
+        }
+    }
+}

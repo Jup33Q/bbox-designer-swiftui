@@ -56,7 +56,7 @@ LangGraph 的价值在多轮 agent 状态机；本任务是**固定两段流水�
 
 ### Step 4 — 后处理与 JSON 组装 `AnnotatePipeline.swift`
 - 纯程序化：NMS 去重（IoU>0.85 保大框）、极小框过滤、嵌套框保留（睫毛/眼这类层级是有意保留的）、CLIP 级排序（按面积降序，人物整体在前）。
-- 组装为现有 `EditorState.parse` 兼容的 caption JSON：`high_level_description`（Ollama 总结或首实体）+ `style_description` + `compositional_decomposition.elements[]`（desc + bbox + color_palette）。
+- 组装为现有 `EditorState.parse` 兼容的 caption JSON：`high_level_description`（Ollama 总结或首实体）+ `style_description` + `compositional_deconstruction.elements[]`（desc + bbox + color_palette）。
 - 结果直接走现有解析闭环进画布；「更新提示词」、差异确认、写回全部免费复用。
 
 ### Step 5 — UI 面板

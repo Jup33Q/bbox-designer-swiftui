@@ -1,6 +1,6 @@
 ---
 name: bbox-designer
-description: 本地 SwiftUI 版 BBox 位置设计器(复刻 bbox.toolbuddy.art),用于 Ideogram 4 JSON 提示词(compositional_deconstruction / bbox / elements)的可视化编辑、解析、写回,并可调用本地 flux-klein MCP 生成图片。当用户要求"打开/使用 BBox 设计器"、"编辑 ideogram 4 JSON 提示词"、"拖拽排版 bbox 生成 caption"、"用 bbox 布局生成图片"时使用。
+description: 本地 SwiftUI 版 BBox 位置设计器(复刻 bbox.toolbuddy.art),用于 Ideogram 4 JSON 提示词(compositional_deconstruction / bbox / elements)的可视化编辑、解析、写回,支持 AI 自动标注(Ollama 视觉模型 + ComfyUI SAM3,离线自动降级),并可调用本地 flux-klein MCP 生成图片。当用户要求"打开/使用 BBox 设计器"、"编辑 ideogram 4 JSON 提示词"、"拖拽排版 bbox 生成 caption"、"用 bbox 布局生成图片"、"AI 自动标注图片进画布"时使用。
 ---
 
 # BBoxDesigner(SwiftUI 本地版)
@@ -12,19 +12,29 @@ description: 本地 SwiftUI 版 BBox 位置设计器(复刻 bbox.toolbuddy.art),
 - 工程:`BBoxDesigner/`(SwiftPM,纯 Command Line Tools 即可编译,无需 Xcode)
 - 打包:`cd BBoxDesigner && scripts/make_app.sh` → 生成 `BBoxDesigner.app`
 - 启动:`open BBoxDesigner/BBoxDesigner.app`
-- 自测:`BBoxDesigner.app/Contents/MacOS/BBoxDesigner --selftest`(36 项断言:JSON 解析/写回闭环 + 智能对齐吸附)
+- 自测:`BBoxDesigner.app/Contents/MacOS/BBoxDesigner --selftest`(178 项断言:JSON 解析/写回闭环 + 智能对齐吸附 + AI 标注 M1–M5)
 - MCP 冒烟:`BBoxDesigner.app/Contents/MacOS/BBoxDesigner --mcptest`
+- AI 标注冒烟:`BBoxDesigner.app/Contents/MacOS/BBoxDesigner --annotate-smoke <图片> [模型]`(M1 识别 → M3 定位 → M4 caption 端到端)
 
 ## 功能对照(与网页版一致)
 
 - 画布:7 档尺寸预设(1024²/1344×768/1408×704/768×1024/768×1152/896×1152/960×1280)、自定义 W×H(64 对齐)、比例锁定(9 种)、参考图(上传/拖拽/⌘⇧V 粘贴)
 - 框编辑:拖动移动、8 手柄缩放、双击空白新建、框选/⌘加选/Shift 范围选、多选整体拖动(统一钳制+虚线组框)、对齐×6、等距×2、复制/锁定/隐藏、网格吸附、智能对齐吸附(黄色参考线+触觉反馈,⌘ 拖动禁用)、三分构图线
-- 快捷键:⌘Z / ⇧⌘Z 撤销重做、Delete 删除、⌘A 全选、方向键微调(Shift=20px 大步进)
+- 快捷键:⌘Z / ⇧⌘Z 撤销重做、Delete 删除、⌘A 全选、方向键微调(Shift=20px 大步进)、⌥B 底图显隐
 - 导入:粘贴/选文件解析 Ideogram 4 JSON(bbox 轴序 [ymin,xmin,ymax,xmax] @0–1000;兼容 elements / compositional_deconstruction.elements / objects / boxes;字段别名 desc/description/label/name)
 - 写回:「更新提示词」带差异确认面板(BBox/描述/全局字段/新增/删除),原地更新保留未知字段与键顺序
 - 输出:实时 caption JSON(high_level_description + style_description + compositional_deconstruction),标量数组单行紧凑格式;复制 caption / 复制为提示词
 - 色板:对象级 color_palette + desc 内 #rrggbb 提取,单击复制、双击改色(24 预设色 + hex + 系统取色器);整体配色改色同步写回
 - 配置管理:保存/还原/删除(持久化到 `~/Library/Application Support/BBoxDesigner/configs.json`,含背景图)
+
+## AI 自动标注(M1–M5,可选依赖)
+
+- 左侧工具栏「✨ AI 自动标注」面板:图片拖入/粘贴 → 模型下拉(启动时读 `ollama list` 自动填充,默认 qwen3.8:27b-mlx)→ 逐实体进度列表(✅/⏳/❌)+ label 可编辑单独重跑 → 「导入画布」「复制 JSON」
+- 依赖:本地 Ollama 视觉模型(`127.0.0.1:11434`,实体清点)+ ComfyUI SAM3(`127.0.0.1:8188` + `sam3.1_multiplex_fp16.safetensors` 权重,批量定位);全部网络调用 async/await
+- 降级行为:SAM3 `/system_stats` 不可达 → 自动降级「仅清单无 bbox」,清单仍可导入画布,不阻塞管线;低置信度(<0.4)/缺失实体单独重试(并发限流 4、60s 超时、同义词回退)
+- 后处理(M4):NMS(同类 IoU>0.85 保大框)、极小框过滤、嵌套保留、person 在前按面积降序;「复制为提示词」走生成视图折叠(部件并入父级,3–6 个主元素),画布保留全量
+- 底面背景(M5):导入图片自动设为画布底图,透明度 30%/60%/100% 三档,⌥B 显隐;持久化于 configs.json `settings` 位
+- configs.json 新格式:`{"settings":{"bg_visible":…,"bg_opacity":…},"configs":[…]}`(保序 JVal);旧裸 `[SavedConfig]` 数组兼容读取,设置位给默认,下次写入自动升级
 
 ## MCP 集成(flux-klein)
 
@@ -39,3 +49,5 @@ description: 本地 SwiftUI 版 BBox 位置设计器(复刻 bbox.toolbuddy.art),
 - 用户给一段 ideogram 4 caption JSON:可直接写入 App 的粘贴框逻辑(见 `EditorState.parse`)——解析规则与网页版逐行对齐
 - 新增元素无 `srcIndex`,「更新提示词」时追加到源数组;删除元素同步移除并重排下标
 - `JVal`(JVal.swift)是保序 JSON AST,写回不丢字段、不打乱键序;`JValWriter.compact` 复刻网页 stringifyCompact
+- AI 标注代码在 `Sources/AIAnnotate/`(OllamaVision / AutoResolution / SAM3Grounder / AnnotatePipeline),坐标轴序 `[ymin,xmin,ymax,xmax]` @0–1000 的换算纯函数在 AutoResolution.swift;离线降级时 caption 元素省略 bbox,`EditorState.parse` 安全落地(boxes=0、style/background 仍回填)
+- EditorState 自测统一用 `EditorState(testConfigsURL:)` 构造,避免读到真实 configs.json

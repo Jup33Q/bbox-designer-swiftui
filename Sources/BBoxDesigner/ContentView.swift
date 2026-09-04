@@ -28,6 +28,10 @@ final class KeyMonitor {
                     return nil
                 }
             }
+            if e.keyCode == 11, mods.contains(.option), !mods.contains(.command) { // ⌥B:底图显隐
+                Task { @MainActor in state.toggleBgVisible() }
+                return nil
+            }
             let arrows: [UInt16: (Double, Double)] = [123: (-1, 0), 124: (1, 0), 125: (0, 1), 126: (0, -1)]
             if let (dx, dy) = arrows[e.keyCode] {
                 let step = mods.contains(.shift) ? EditorState.gridSize : 1
@@ -65,6 +69,7 @@ struct ContentView: View {
                 // 右:面板
                 ScrollView {
                     VStack(spacing: 12) {
+                        AIAnnotateView(state: state)
                         ImportView(state: state)
                         GlobalFieldsView(state: state)
                         SelectedInfoView(state: state)
@@ -157,6 +162,15 @@ struct ContentView: View {
 
             GhostButton(title: "上传参考图") { pickImage() }
             if state.bgImage != nil {
+                Picker("底图透明度", selection: Binding(get: { state.bgOpacity }, set: { state.setBgOpacity($0) })) {
+                    ForEach(EditorState.bgOpacitySteps, id: \.self) { o in
+                        Text("\(Int((o * 100).rounded()))%").tag(o)
+                    }
+                }
+                .labelsHidden()
+                .pickerStyle(.segmented)
+                .frame(width: 132)
+                GhostButton(title: state.bgVisible ? "隐藏底图 ⌥B" : "显示底图 ⌥B", active: !state.bgVisible) { state.toggleBgVisible() }
                 GhostButton(title: "移除背景") { state.bgImage = nil }
             }
             GhostButton(title: "清除画布") { showClearConfirm = true }
@@ -321,6 +335,26 @@ struct BBoxDesignerApp: App {
             let model = CommandLine.arguments.count > i + 2 ? CommandLine.arguments[i + 2] : OllamaVision.defaultModel
             Task {
                 let code = await OllamaVision.smokeTest(imagePath: path, model: model)
+                exit(code)
+            }
+        }
+        if let i = CommandLine.arguments.firstIndex(of: "--sam3-smoke"), CommandLine.arguments.count > i + 1 {
+            let path = CommandLine.arguments[i + 1]
+            // 可选第三参:逗号分隔 label 列表,默认 "apple,cup,key"
+            let labels = CommandLine.arguments.count > i + 2
+                ? CommandLine.arguments[i + 2].split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }
+                : ["apple", "cup", "key"]
+            Task {
+                let code = await SAM3Grounder.smokeTest(imagePath: path, labels: labels)
+                exit(code)
+            }
+        }
+        if let i = CommandLine.arguments.firstIndex(of: "--annotate-smoke"), CommandLine.arguments.count > i + 1 {
+            let path = CommandLine.arguments[i + 1]
+            // 可选第三参:模型名
+            let model = CommandLine.arguments.count > i + 2 ? CommandLine.arguments[i + 2] : OllamaVision.defaultModel
+            Task {
+                let code = await AnnotatePipeline.smokeTest(imagePath: path, model: model)
                 exit(code)
             }
         }

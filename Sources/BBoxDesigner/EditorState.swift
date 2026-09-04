@@ -83,6 +83,10 @@ final class EditorState: ObservableObject {
     /// 触觉反馈开关(预留,暂不进 UI)
     var hapticsEnabled = true
     @Published var bgImage: NSImage? = nil
+    /// 底面背景显隐(⌥B 一键切换;M5,持久化 configs.json 全局 settings 位)
+    @Published var bgVisible: Bool = true
+    /// 底面背景透明度,三档 30%/60%/100%(M5)
+    @Published var bgOpacity: Double = 0.6
 
     // 全局/背景/风格
     @Published var highLevel = ""
@@ -133,7 +137,17 @@ final class EditorState: ObservableObject {
         ("4:3", "4:3"), ("3:4", "3:4"), ("3:2", "3:2"), ("2:3", "2:3"), ("4:5", "4:5"), ("5:4", "5:4")
     ]
 
-    init() { resetHistory() }
+    init() {
+        resetHistory()
+        loadConfigsFromDisk()
+    }
+
+    /// 自测用:先指定 configs 路径再加载,避免 init 读到真实 configs.json。
+    init(testConfigsURL: URL) {
+        configsURLForTesting = testConfigsURL
+        resetHistory()
+        loadConfigsFromDisk()
+    }
 
     // MARK: 基础工具
     func normalizeDimension(_ v: Double, fallback: Double = 64) -> Double {
@@ -1041,22 +1055,79 @@ final class EditorState: ObservableObject {
 
     @Published var configs: [SavedConfig] = []
 
+    /// 自测钩子:非 nil 时代替默认 configs.json 路径(避免污染真实配置)。
+    var configsURLForTesting: URL? = nil
+
     private var configsURL: URL {
+        if let t = configsURLForTesting { return t }
         let dir = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
             .appendingPathComponent("BBoxDesigner", isDirectory: true)
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         return dir.appendingPathComponent("configs.json")
     }
 
-    func loadConfigsFromDisk() {
-        guard let data = try? Data(contentsOf: configsURL),
-              let arr = try? JSONDecoder().decode([SavedConfig].self, from: data) else { configs = []; return }
-        configs = arr
+    func loadConfigsFromDisk() { loadConfigs(from: configsURL) }
+
+    /// 读 configs.json:新格式 {"settings":{...},"configs":[...]}(保序 JVal);
+    /// 兼容旧格式裸 [SavedConfig] 数组(无 settings 位,visible/opacity 给默认)。
+    func loadConfigs(from url: URL) {
+        // 无 settings 位(文件缺失/旧裸数组)时显隐与透明度回到默认。
+        bgVisible = true
+        bgOpacity = 0.6
+        guard let data = try? Data(contentsOf: url),
+              let root = JValParser.parse(String(decoding: data, as: UTF8.self)) else { configs = []; return }
+        if root.isObject {
+            applyGlobalSettings(root["settings"])
+            let cfgsJ = root["configs"] ?? .arr([])
+            configs = (try? JSONDecoder().decode([SavedConfig].self, from: Data(JValWriter.compact(cfgsJ).utf8))) ?? []
+        } else {
+            configs = (try? JSONDecoder().decode([SavedConfig].self, from: data)) ?? []
+        }
     }
-    private func writeConfigsToDisk() -> Bool {
-        guard let data = try? JSONEncoder().encode(configs) else { return false }
-        return (try? data.write(to: configsURL)) != nil
+
+    private func writeConfigsToDisk() -> Bool { writeConfigs(to: configsURL) }
+
+    /// 写 configs.json:保序 JVal,settings 位在前、configs 在后。
+    func writeConfigs(to url: URL) -> Bool {
+        guard let cfgsData = try? JSONEncoder().encode(configs),
+              let cfgsJ = JValParser.parse(String(decoding: cfgsData, as: UTF8.self)) else { return false }
+        let root = JVal.obj([("settings", globalSettingsJVal()), ("configs", cfgsJ)])
+        return (try? Data(JValWriter.compact(root).utf8).write(to: url)) != nil
     }
+
+    // MARK: - 底面背景全局设置(M5;configs.json settings 位,非命名配置)
+
+    /// 底图透明度三档(30%/60%/100%)。
+    static let bgOpacitySteps: [Double] = [0.3, 0.6, 1.0]
+
+    /// ⌥B:底图显隐切换(隐藏时回到纯网格画布)并持久化。
+    func toggleBgVisible() {
+        bgVisible.toggle()
+        persistGlobalSettings()
+        showToast(bgVisible ? "底图已显示" : "底图已隐藏(纯网格画布)")
+    }
+
+    /// 透明度吸附到最近档位并持久化。
+    func setBgOpacity(_ v: Double) {
+        guard let nearest = EditorState.bgOpacitySteps.min(by: { abs($0 - v) < abs($1 - v) }) else { return }
+        bgOpacity = nearest
+        persistGlobalSettings()
+    }
+
+    /// 全局设置位序列化(保序 JVal:visible → opacity)。
+    func globalSettingsJVal() -> JVal {
+        .obj([("bg_visible", .bool(bgVisible)), ("bg_opacity", .num(bgOpacity))])
+    }
+
+    /// 从 settings 位还原;缺失/非法字段忽略(保留当前值)。
+    func applyGlobalSettings(_ j: JVal?) {
+        guard let j else { return }
+        if let v = j["bg_visible"]?.boolValue { bgVisible = v }
+        if let o = j["bg_opacity"]?.doubleValue,
+           EditorState.bgOpacitySteps.contains(where: { abs($0 - o) < 1e-9 }) { bgOpacity = o }
+    }
+
+    private func persistGlobalSettings() { _ = writeConfigsToDisk() }
 
     func saveConfig(name: String) {
         let trimmed = name.trimmingCharacters(in: .whitespaces)

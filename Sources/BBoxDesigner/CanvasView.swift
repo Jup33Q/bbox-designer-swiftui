@@ -58,11 +58,12 @@ struct CanvasAreaView: View {
     @ViewBuilder
     func canvasContent(cssW: CGFloat, cssH: CGFloat, scale: CGFloat) -> some View {
         ZStack(alignment: .topLeading) {
-            // 背景
-            if let img = state.bgImage {
+            // 背景(底面背景:M5 加 visible/opacity 状态位,⌥B 隐藏时回到纯网格画布)
+            if let img = state.bgImage, state.bgVisible {
                 Image(nsImage: img)
                     .resizable()
                     .frame(width: cssW, height: cssH)
+                    .opacity(state.bgOpacity)
             } else {
                 Theme.surface2
             }
